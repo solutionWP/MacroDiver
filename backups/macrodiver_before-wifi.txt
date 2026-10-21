@@ -1,0 +1,10 @@
+MACRODIVER-BACKUP 1
+S menuKey=0 menuMode=0 dirSet=0 speed=1 brightness=80 showCodes=1 usbSerial=1 activeBuild=1 rotate180=1 chatKey=0 textLayout=0
+B 1|Starter|51,104,26,10,200,201,203
+B 1|terminide1|26,46,150,154,200,201,27,2000,2001,2002,2003
+B 1|fire|11,47,23,158,150,200,201,2000,2001,2002,2003
+M 2000|gg
+M 2001|have to go, see ya
+M 2002|see ya
+M 2003|bunker
+END

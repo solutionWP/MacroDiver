@@ -1,0 +1,6 @@
+{
+  "name": "macrodiver-icongen",
+  "private": true,
+  "description": "Rasterises Helldivers 2 stratagem SVGs into data/icons.bin + src/icons_index.h",
+  "dependencies": { "sharp": "0.33.5" }
+}
