@@ -29,8 +29,7 @@ dongle then types the keys with the same timing as the cable. The pad still need
 power bank, a charger, or its battery.
 
 **Set up once:**
-1. Flash the dongle (see *Building / flashing*), then plug it into the adapter, PS5 or PC. Its LED
-   blinks purple, meaning it isn't paired yet.
+1. Flash the dongle (see *Building / flashing*), then plug it into the adapter, PS5 or PC.
 2. On the pad: *Settings → Output: Wireless dongle*.
 3. *Settings → Dongle: tap to pair*. The pad looks for a dongle for 60 s. Pairing happens within
    a second or two, and the row then reads *Dongle: connected*.
@@ -39,6 +38,10 @@ From then on, the two find each other at every power-up. The title icon is a Wi-
 USB: **green** means the dongle is ready, **red** means it's out of range or not plugged into a
 host. The pad's Wi-Fi editor keeps working, because the dongle follows the pad's channel. While
 the pad is still joining the home network, the link can drop out for a few seconds.
+
+The dongle's status LED stays **off**; its state shows on the pad, in *Settings → Dongle*. The
+small red power LED is wired to the supply, so firmware can't turn it off. To get the status LED
+back, set `-DLED_ENABLED=1` in `dongle/platformio.ini` and reflash; it then shows:
 
 | Dongle LED | Meaning |
 |---|---|
@@ -94,15 +97,18 @@ nearby with a radio sniffer could read the stratagems and chat messages you send
     the new data.
   - **Settings → Network: …** shows the saved home network. Tap twice to forget it.
   - **Security:** anyone on your home network can open the editor (there's no login). Turn
-    Wi-Fi off when you don't need it. Custom stratagems are still edited on the pad itself.
+    Wi-Fi off when you don't need it.
 - **Chat messages:** canned text you can place on the pad like stratagems (*Edit stratagems → Add /
   remove → Messages*). Tapping one opens chat (Enter by default), types the text and presses Enter.
   Defaults: `gg`, `have to go, see ya`, `see ya`, `bunker`. Up to 12 messages of 40 characters;
   manage them in *Menu → Chat messages*. Set **Settings → Text layout** to match the keyboard layout
   of the receiving PC (e.g. FR AZERTY), otherwise letters come out swapped. On PS5 through a
   controller adapter, typed text generally won't reach the game chat.
-- **Custom stratagems:** add new warbond stratagems yourself (a name plus an arrow code) without
-  reflashing. LAS-44 Nova and AMW-20 Apex come out on Oct 20, 2026 and have no published codes yet.
+- **New warbonds, without reflashing:** see *Adding new stratagems* below.
+- **Custom stratagems:** up to 40, each with a name, a category, an arrow code and an icon. Make
+  them in the phone editor (*Custom stratagems*, with an image of your own if you like) or on the
+  pad (*Menu → Custom stratagems*: name and code only). They show up in their category when
+  you add stratagems to a build.
 - **Settings:**
 
   | Setting | Options |
@@ -140,12 +146,38 @@ Mission) is in [src/stratagems.cpp](src/stratagems.cpp). Codes come from helldiv
 (October 2026). Each entry has a fixed ID, so saved builds stay valid. Add new stratagems with new
 IDs and never renumber existing ones.
 
-Icons come from [nvigneux/Helldivers-2-Stratagems-icons-svg](https://github.com/nvigneux/Helldivers-2-Stratagems-icons-svg).
-To regenerate them after adding entries, update the map in `tools/icongen/gen.js`, then run:
+Icons come from [nvigneux/Helldivers-2-Stratagems-icons-svg](https://github.com/nvigneux/Helldivers-2-Stratagems-icons-svg)
+(the "icon library"; it has no license, so keep this repository private). To regenerate the built-in
+icons after adding entries, update the map in `tools/icongen/gen.js`, then run it on a git clone
+of the library (it records each icon's library path and git SHA for the update check):
 
 ```
-cd tools/icongen && npm install && node gen.js <path-to-icons-repo> ../..
+git clone https://github.com/nvigneux/Helldivers-2-Stratagems-icons-svg.git <icons-repo>
+cd tools/icongen && npm install && node gen.js <icons-repo> ../..
 ```
+
+### Adding new stratagems
+
+New warbonds show up in the icon library within days, one folder per warbond. The phone editor
+adds them to the pad with their icons; no PC or reflash needed:
+
+1. The pad and the phone must both be on your home Wi-Fi: the phone needs internet.
+2. In the phone editor, under *New stratagems & icons*, tap **Check for updates**. It compares the
+   library with the pad and lists:
+   - **New stratagems, grouped by folder** (warbond). Open one, check each name and category,
+     enter the **arrow code** from the in-game stratagem menu (the library has icons only), then
+     tap **Add to pad**. You can leave a code empty and fill it in later under *Custom
+     stratagems*; the pad refuses to send a stratagem without a code. Untick the ones you don't
+     want, or tap *Hide* so they stop showing up.
+   - **Icons to download:** newer versions of icons the pad already has (library fixes),
+     icons for built-in stratagems that had none, and icons missing after a restore.
+     **Download** fetches them all.
+3. The new stratagems appear on the pad in their category, ready to add to a build.
+
+Added icons live in the pad's spare flash partition (about 18 KB each, room for about 160). Normal
+firmware uploads keep them; a factory reset or full flash erase removes them. Text backups record
+where each imported stratagem's icon came from, so after a restore, *Check for updates* downloads
+the missing icons again. Images you uploaded yourself aren't in the backup.
 
 ## Tools and paths (this PC)
 
@@ -207,7 +239,8 @@ The file is plain text and can be edited by hand before importing:
 MACRODIVER-BACKUP 1
 S menuKey=0 menuMode=0 dirSet=0 speed=1 brightness=80 showCodes=1 usbSerial=1 activeBuild=2 rotate180=1 chatKey=0 textLayout=0
 B <layout 0=Large 1=Dense>|<name>|<id>,<id>,...      one line per build, in order
-C <id>|<name>|<code U/D/L/R>                          custom stratagem (ids 1000+)
+C <id>|<name>|<code U/D/L/R>|<category>|<icon path>    custom stratagem (ids 1000+); category 0-8
+                                                      as in src/stratagems.h; older 3-field lines work
 M <id>|<text>                                         chat message (ids 2000+)
 END
 ```

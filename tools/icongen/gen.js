@@ -1,10 +1,21 @@
 // Rasterise stratagem SVGs -> LVGL TRUE_COLOR_ALPHA (RGB565 byte-swapped + A8) blob + index header.
 // usage: node gen.js <icons_repo_dir> <project_dir>
+// <icons_repo_dir> must be a git clone: each icon's repo path and blob SHA go into the header,
+// so the phone editor can tell which library icons are new or changed (web_page.h).
 const sharp = require('sharp');
 const fs = require('fs');
 const path = require('path');
+const { execFileSync } = require('child_process');
 
 const [repo, proj] = process.argv.slice(2);
+// path (without .svg) -> git blob SHA, as GitHub's tree API reports it
+const SHA = {};
+for (const line of execFileSync('git', ['-C', repo, 'ls-tree', '-r', '-z', 'HEAD']).toString('utf8').split('\0')) {
+  const m = line.match(/^\d+ blob ([0-9a-f]{40})\t(.+)\.svg$/);
+  if (m) SHA[m[2]] = m[1];
+}
+const cstr = s => '"' + Buffer.from(s, 'utf8').toString('latin1').replace(/[\\"]/g, '\\$&')
+  .replace(/[\x80-\xff]/g, c => '\\' + c.charCodeAt(0).toString(8).padStart(3, '0')) + '"';
 const SIZES = [64, 44];
 const PAC = 'Patriotic Administration Center';
 const MAP = {
@@ -67,7 +78,7 @@ async function render(file, size) {
   let off = 0;
   for (const [id, rel] of Object.entries(MAP)) {
     const file = path.join(repo, rel + '.svg');
-    if (!fs.existsSync(file)) { console.error('MISSING', id, rel); process.exit(1); }
+    if (!fs.existsSync(file) || !SHA[rel]) { console.error('MISSING', id, rel); process.exit(1); }
     const offs = [];
     for (const s of SIZES) {
       const buf = await render(file, s);
@@ -75,7 +86,7 @@ async function render(file, size) {
       parts.push(buf);
       off += buf.length;
     }
-    rows.push(`  {${id}, ${offs.join(', ')}},`);
+    rows.push(`  {${id}, ${offs.join(', ')}, ${cstr(rel)}, "${SHA[rel]}"},`);
   }
   fs.mkdirSync(path.join(proj, 'data'), { recursive: true });
   fs.writeFileSync(path.join(proj, 'data', 'icons.bin'), Buffer.concat(parts));
@@ -85,7 +96,8 @@ async function render(file, size) {
 #include <stdint.h>
 #define ICON_LARGE ${SIZES[0]}
 #define ICON_SMALL ${SIZES[1]}
-struct IconEntry { uint16_t id; uint32_t offLarge, offSmall; };
+// path: icon in the library, without ".svg"; sha: its git blob SHA when generated
+struct IconEntry { uint16_t id; uint32_t offLarge, offSmall; const char *path; const char *sha; };
 static const IconEntry ICON_INDEX[] = {
 ${rows.join('\n')}
 };

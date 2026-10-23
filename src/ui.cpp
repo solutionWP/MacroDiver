@@ -267,6 +267,10 @@ static void tile_event(lv_event_t *e) {
       return;
     }
     bool msg = s->cat == CAT_MESSAGE;
+    if (!msg && !s->code[0]) {  // imported before its code was known
+      home_flash("No code yet", COL_RED, 2000);
+      return;
+    }
     if (msg ? hid_send_text(s->name) : hid_send(s->code)) {
       s_sendingTile = tile;
       lv_obj_add_state(tile, LV_STATE_CHECKED);
@@ -677,6 +681,12 @@ static void show_edit(int bi) {
 static int s_pickBuild = 0, s_pickCat = 0;
 static lv_obj_t *s_pickTitle = nullptr;
 
+static int customs_in_cat(int cat) {
+  int n = 0;
+  for (int j = 0; j < g_customCount; j++) n += custom_find(g_customs[j].id)->cat == cat;
+  return n;
+}
+
 static int count_in_cat(const Build &b, int cat) {
   int n = 0;
   for (int k = 0; k < b.count; k++) {
@@ -698,7 +708,7 @@ static void show_categories(int bi) {
   add_title(scr, t);
   lv_obj_t *l = add_list(scr);
   for (int c = 0; c < CAT_COUNT; c++) {
-    if (c == CAT_CUSTOM && g_customCount == 0) continue;
+    if (c == CAT_CUSTOM && !customs_in_cat(c)) continue;  // custom ones may live in the regular categories
     if (c == CAT_MESSAGE && g_msgCount == 0) continue;
     char buf[40];
     int n = count_in_cat(b, c);
@@ -763,13 +773,15 @@ static void show_picker(int bi, int cat) {
   lv_label_set_recolor(s_pickTitle, true);
   picker_title();
   lv_obj_t *l = add_list(scr);
-  if (cat == CAT_CUSTOM) {
-    for (int j = 0; j < g_customCount; j++) picker_add(l, custom_find(g_customs[j].id), b);
-  } else if (cat == CAT_MESSAGE) {
+  if (cat == CAT_MESSAGE) {
     for (int j = 0; j < g_msgCount; j++) picker_add(l, msg_find(g_msgs[j].id), b);
   } else {
     for (size_t i = 0; i < strat_catalog_count(); i++) {
       const Strat *s = strat_catalog_at(i);
+      if (s->cat == cat) picker_add(l, s, b);
+    }
+    for (int j = 0; j < g_customCount; j++) {  // made on the pad, or imported into this category
+      const Strat *s = custom_find(g_customs[j].id);
       if (s->cat == cat) picker_add(l, s, b);
     }
   }
@@ -943,13 +955,14 @@ static void show_customs() {
   lv_obj_t *l = add_list(scr);
   if (g_customCount < MAX_CUSTOM) add_row(l, LV_SYMBOL_PLUS "  New stratagem", customs_event, UD(-1), COL_GREEN);
   for (int j = 0; j < g_customCount; j++) {
-    lv_obj_t *r = add_row(l, g_customs[j].name, customs_event, UD(j), cat_color(CAT_CUSTOM), 62);
+    uint32_t col = cat_color(custom_find(g_customs[j].id)->cat);
+    lv_obj_t *r = add_row(l, g_customs[j].name, customs_event, UD(j), col, 62);
     lv_obj_t *name = lv_obj_get_child(r, 0);
     lv_obj_set_style_text_font(name, &lv_font_montserrat_16, 0);
     lv_obj_align(name, LV_ALIGN_TOP_LEFT, 0, 9);
     char arrows[4 * MAX_CODE + 8];
     strat_code_to_arrows(g_customs[j].code, arrows, sizeof(arrows));
-    lv_obj_t *a = add_label(r, arrows, &lv_font_montserrat_14, cat_color(CAT_CUSTOM));
+    lv_obj_t *a = add_label(r, arrows[0] ? arrows : "no code yet", &lv_font_montserrat_14, arrows[0] ? col : COL_DIM);
     lv_obj_align(a, LV_ALIGN_BOTTOM_LEFT, 0, -8);
   }
   add_back(scr, back_menu);

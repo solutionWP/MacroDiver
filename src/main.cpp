@@ -15,6 +15,7 @@
 #include "ui.h"
 #include "web.h"
 #include "link.h"
+#include "icons.h"
 
 #define BOOT_BTN_PIN 0
 
@@ -22,6 +23,7 @@ void debug_poll();  // debug_cmd.cpp
 
 void setup() {
   Serial.begin(115200);
+  icons_begin();  // before storage_load(): it may convert old data, and before the UI shows icons
   storage_load();
   hid_begin(g_settings.usbSerial);
   display_begin();

@@ -4,6 +4,9 @@
 //   GET  /api/state     catalog + builds + messages (JSON)
 //   GET  /icons         small icons, raw, in the order given by "i" in /api/state
 //   POST /api/save      {active, builds:[{name,layout,ids}], msgs:[{id,text}]}
+//   POST /api/custom    {id (0 = new), name, cat, code, src} -> {ok, id}
+//   POST /api/custom/delete {id}
+//   POST /api/icon?id=&sha=  multipart: icon pixels (icons.h), for a custom or built-in stratagem
 //   GET  /api/wifi      {state, home, online, ip, apOn, apSsid, host}
 //   GET  /api/scan      {busy} or {nets:[{ssid,rssi,lock}]} (async scan)
 //   POST /api/wifi      {ssid, pass} -> save and connect
@@ -47,14 +50,25 @@ static void ascii_copy(char *dst, const char *src, size_t maxLen) {
   while (n && dst[n - 1] == ' ') dst[--n] = 0;
 }
 
+// The state document (~170 stratagems with icon paths) is big for the internal heap
+struct PsramAllocator : ArduinoJson::Allocator {
+  void *allocate(size_t n) override { return ps_malloc(n); }
+  void deallocate(void *p) override { free(p); }
+  void *reallocate(void *p, size_t n) override { return ps_realloc(p, n); }
+};
+static PsramAllocator s_psram;
+
 String web_state_json() {
-  JsonDocument doc;
+  JsonDocument doc(&s_psram);
   doc["maxSlots"] = MAX_SLOTS;
   doc["maxBuilds"] = MAX_BUILDS;
   doc["maxMsgs"] = MAX_MSG;
   doc["nameLen"] = NAME_LEN;
   doc["msgLen"] = MSG_LEN;
   doc["iconSize"] = icon_small_size();
+  doc["iconVer"] = icons_version();
+  doc["maxCustom"] = MAX_CUSTOM;
+  doc["codeLen"] = MAX_CODE;
   doc["active"] = g_settings.activeBuild;
   JsonArray cats = doc["cats"].to<JsonArray>();
   for (int c = 0; c < CAT_COUNT; c++) {
@@ -65,16 +79,21 @@ String web_state_json() {
     o["c"] = col;
   }
   JsonArray strats = doc["strats"].to<JsonArray>();
-  auto addStrat = [&](const Strat *s) {
+  auto addStrat = [&](const Strat *s, const char *path) {
     JsonObject o = strats.add<JsonObject>();
     o["id"] = s->id;
     o["c"] = s->cat;
     o["n"] = s->name;
     o["k"] = s->code;
     o["i"] = icon_index(s->id);
+    o["p"] = path;              // icon library path, "" if unknown
+    o["h"] = icon_sha(s->id);   // SHA of the icon the pad has, "" if none
   };
-  for (size_t i = 0; i < strat_catalog_count(); i++) addStrat(strat_catalog_at(i));
-  for (int j = 0; j < g_customCount; j++) addStrat(custom_find(g_customs[j].id));
+  for (size_t i = 0; i < strat_catalog_count(); i++) {
+    const Strat *s = strat_catalog_at(i);
+    addStrat(s, icon_path(s->id));
+  }
+  for (int j = 0; j < g_customCount; j++) addStrat(custom_find(g_customs[j].id), g_customs[j].src);
   JsonArray builds = doc["builds"].to<JsonArray>();
   for (int i = 0; i < g_buildCount; i++) {
     JsonObject o = builds.add<JsonObject>();
@@ -155,6 +174,100 @@ const char *web_apply_json(const char *json) {
   s_saves++;
   hid_log("Web save: %d builds, %d messages", g_buildCount, g_msgCount);
   return nullptr;
+}
+
+static void reply(int code, const char *err) {
+  if (!err) {
+    s_server->send(code, "application/json", "{\"ok\":true}");
+    return;
+  }
+  JsonDocument doc;
+  doc["ok"] = false;
+  doc["err"] = err;
+  String out;
+  serializeJson(doc, out);
+  s_server->send(code, "application/json", out);
+}
+
+// POST /api/custom {id (0 = new), name, cat, code, src} -> {ok, id}
+static void handle_custom() {
+  JsonDocument doc;
+  if (deserializeJson(doc, s_server->arg("plain"))) return reply(400, "bad json");
+  char name[NAME_LEN + 1], code[MAX_CODE + 1];
+  ascii_copy(name, doc["name"] | "", NAME_LEN);
+  if (!name[0]) return reply(400, "need a name");
+  size_t n = 0;
+  for (const char *c = doc["code"] | ""; *c && n < MAX_CODE; c++)
+    if (strchr("UDLR", *c)) code[n++] = *c;
+  code[n] = 0;
+  int cat = doc["cat"] | (int)CAT_CUSTOM;
+  if (cat < 0 || cat >= CAT_MESSAGE) cat = CAT_CUSTOM;
+  const char *src = doc["src"] | "";
+  if (strlen(src) > SRC_LEN) src = "";  // too long to keep: only update tracking is lost
+
+  int id = doc["id"] | 0, j;
+  if (id) {
+    j = custom_index(id);
+    if (j < 0) return reply(404, "unknown stratagem");
+    CustomStrat &c = g_customs[j];
+    strcpy(c.name, name);
+    strcpy(c.code, code);
+    c.cat = cat;
+    if (doc["src"].is<const char *>()) strcpy(c.src, src);
+    custom_refresh(j);
+  } else {
+    j = custom_add(name, code, cat, src);
+    if (j < 0) return reply(409, "custom list is full");
+  }
+  storage_save_customs();
+  s_saves++;
+  hid_log("Web: custom %u '%s' %s", g_customs[j].id, g_customs[j].name, g_customs[j].code);
+  char out[40];
+  snprintf(out, sizeof(out), "{\"ok\":true,\"id\":%u}", g_customs[j].id);
+  s_server->send(200, "application/json", out);
+}
+
+// POST /api/custom/delete {id}
+static void handle_custom_delete() {
+  JsonDocument doc;
+  if (deserializeJson(doc, s_server->arg("plain"))) return reply(400, "bad json");
+  int j = custom_index(doc["id"] | 0);
+  if (j < 0) return reply(404, "unknown stratagem");
+  custom_delete(j);  // also from builds, and its icon
+  storage_save_customs();
+  s_saves++;
+  reply(200, nullptr);
+}
+
+// POST /api/icon?id=<id>&sha=<library blob sha>, multipart file of ICON_BYTES
+// (64 px then 44 px, RGB565 big-endian + alpha), rasterised by the page.
+static uint8_t *s_up = nullptr;
+static size_t s_upLen = 0;
+static bool s_upBad = false;
+
+static void icon_upload() {
+  HTTPUpload &u = s_server->upload();
+  if (u.status == UPLOAD_FILE_START) {
+    if (!s_up) s_up = (uint8_t *)ps_malloc(ICON_BYTES);
+    s_upLen = 0;
+    s_upBad = !s_up;
+  } else if (u.status == UPLOAD_FILE_WRITE && !s_upBad) {
+    if (s_upLen + u.currentSize > ICON_BYTES) s_upBad = true;
+    else {
+      memcpy(s_up + s_upLen, u.buf, u.currentSize);
+      s_upLen += u.currentSize;
+    }
+  }
+}
+
+static void icon_done() {
+  uint16_t id = s_server->arg("id").toInt();
+  const Strat *s = strat_get(id);
+  if (!s || s->cat == CAT_MESSAGE) return reply(404, "unknown stratagem");
+  if (s_upBad || s_upLen != ICON_BYTES) return reply(400, "bad icon data");
+  if (!icon_store(id, s_server->arg("sha").c_str(), s_up, s_upLen)) return reply(507, "icon storage full");
+  s_saves++;
+  reply(200, nullptr);
 }
 
 static void handle_save() {
@@ -316,6 +429,9 @@ static void start() {
   s_server->on("/api/state", HTTP_GET, send_state);
   s_server->on("/icons", HTTP_GET, send_icons);
   s_server->on("/api/save", HTTP_POST, handle_save);
+  s_server->on("/api/custom", HTTP_POST, handle_custom);
+  s_server->on("/api/custom/delete", HTTP_POST, handle_custom_delete);
+  s_server->on("/api/icon", HTTP_POST, icon_done, icon_upload);
   s_server->on("/api/wifi", HTTP_GET, send_wifi);
   s_server->on("/api/scan", HTTP_GET, send_scan);
   s_server->on("/api/wifi", HTTP_POST, handle_wifi_set);

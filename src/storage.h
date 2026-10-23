@@ -6,7 +6,8 @@
 #define MAX_BUILDS  12
 #define MAX_SLOTS   24
 #define NAME_LEN    18
-#define MAX_CUSTOM  16
+#define MAX_CUSTOM  40
+#define SRC_LEN     63  // icon library path, see icons.h
 #define MAX_CODE    10
 #define MAX_MSG     12
 #define MSG_LEN     40
@@ -23,7 +24,9 @@ struct Build {
 struct CustomStrat {
   uint16_t id;  // >= CUSTOM_ID_BASE, stable
   char name[NAME_LEN + 1];
-  char code[MAX_CODE + 1];
+  char code[MAX_CODE + 1];  // "" = not known yet (can't be sent)
+  uint8_t cat;              // StratCat; CAT_CUSTOM when made on the pad
+  char src[SRC_LEN + 1];    // icon library path it was imported from, "" if none
 };
 
 struct ChatMsg {
@@ -75,8 +78,10 @@ void build_delete(int i);
 int build_find_slot(const Build *b, uint16_t id);
 bool build_toggle(Build *b, uint16_t id);  // add at end / remove; returns true if now present
 
-int custom_add(const char *name, const char *code);  // returns index or -1
-void custom_delete(int j);                            // also removes it from builds
+// returns index or -1
+int custom_add(const char *name, const char *code, uint8_t cat = CAT_CUSTOM, const char *src = "");
+void custom_delete(int j);                            // also removes it from builds, and its icon
+int custom_index(uint16_t id);                        // -1 if unknown
 const Strat *custom_find(uint16_t id);
 void custom_refresh(int j);                           // after editing name/code
 

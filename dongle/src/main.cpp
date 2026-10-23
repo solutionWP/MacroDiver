@@ -2,13 +2,14 @@
 // adapter (or a PC) as a USB keyboard and types what the pad sends over ESP-NOW.
 // Protocol and keystroke timing are shared with the pad: lib/macrolink.
 //
-// LED:  purple blink  not paired yet (pad: Settings -> Dongle -> tap to pair)
+// LED (only with LED_ENABLED=1; off by default, see platformio.ini):
+//       purple blink  not paired yet (pad: Settings -> Dongle -> tap to pair)
 //       blue blink    looking for its pad
 //       green         linked and plugged into a USB host
 //       yellow        linked, but no USB host (power-only port or charger)
 //       white         typing
-// BOOT: short press   USB serial on/off (cyan flashes, restarts)
-//       hold 3 s      forget the pad (red flashes, restarts)
+// BOOT: short press   USB serial on/off (restarts; cyan flashes if the LED is enabled)
+//       hold 3 s      forget the pad (restarts; red flashes if the LED is enabled)
 #include <Arduino.h>
 #include <USB.h>
 #include <USBHIDKeyboard.h>
@@ -95,7 +96,9 @@ static void on_recv(const esp_now_recv_info_t *info, const uint8_t *data, int le
       s_paired = true;
       s_newPair = true;
     }
-    s_padChannel = info->rx_ctrl->channel;  // the scan may have hopped on since the PING
+    // The pad says where it is: the scan may have hopped on since the PING, and a
+    // neighbouring channel can still hear the pad at short range
+    s_padChannel = p->channel >= 1 && p->channel <= MAX_CHANNEL ? p->channel : info->rx_ctrl->channel;
     s_lastPong = millis();
     s_linked = true;
   } else if (type == LINK_JOB && fromPad) {
@@ -136,7 +139,12 @@ static void type_task(void *) {
 
 // ---------------------------------------------------------------- LED
 
+#ifndef LED_ENABLED
+#define LED_ENABLED 1
+#endif
+
 static void led(uint8_t r, uint8_t g, uint8_t b) {
+  if (!LED_ENABLED) r = g = b = 0;  // still written once, so the LED is cleared after a reset
   static uint32_t last = 0xFFFFFFFF;
   uint32_t c = (r << 16) | (g << 8) | b;
   if (c == last) return;

@@ -41,7 +41,7 @@ void macro_run(USBHIDKeyboard &kb, const MacroJob &job, void (*onStep)(int));
 // ---------------------------------------------------------------- link
 
 #define LINK_MAGIC       0x4D44  // "MD"
-#define LINK_VERSION     1
+#define LINK_VERSION     2
 #define LINK_PING_MS     1000    // dongle heartbeat once linked
 #define LINK_TIMEOUT_MS  3500    // no PING/PONG for this long = link lost
 #define LINK_PAIR_MS     60000   // pad pairing window
@@ -65,6 +65,8 @@ struct __attribute__((packed)) LinkPing {  // dongle -> pad (broadcast while sea
 struct __attribute__((packed)) LinkPong {  // pad -> dongle
   LinkHeader h;
   uint8_t pairing;  // pad accepts a new dongle
+  uint8_t channel;  // pad's Wi-Fi channel: neighbouring channels leak at short range, so the
+                    // channel a PONG was heard on isn't always the pad's
 };
 
 struct __attribute__((packed)) LinkJobMsg {  // pad -> dongle

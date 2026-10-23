@@ -24,6 +24,7 @@ static volatile bool s_newPair = false;  // set by the callback, saved by link_l
 static volatile uint32_t s_lastSeen = 0;
 static volatile bool s_usb = false;
 static volatile uint32_t s_pairUntil = 0;
+static volatile uint8_t s_channel = 0;  // current Wi-Fi channel, refreshed by link_loop()
 
 static LinkJobMsg s_job;
 static uint16_t s_seq;
@@ -75,6 +76,7 @@ static void on_recv(const esp_now_recv_info_t *info, const uint8_t *data, int le
     LinkPong pong;
     link_header(pong.h, LINK_PONG);
     pong.pairing = adopt;
+    pong.channel = s_channel;
     esp_now_send(mac, (const uint8_t *)&pong, sizeof(pong));
   } else if (type == LINK_STATUS && known) {
     const LinkStatus *st = (const LinkStatus *)data;
@@ -155,6 +157,9 @@ void link_wifi_changed() {
 
 void link_loop() {
   if (!s_on) return;
+  uint8_t ch;
+  wifi_second_chan_t second;
+  if (esp_wifi_get_channel(&ch, &second) == ESP_OK) s_channel = ch;  // read here: not from the Wi-Fi task
   if (s_newPair) {
     s_newPair = false;
     char buf[18];

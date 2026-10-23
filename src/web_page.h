@@ -1,5 +1,7 @@
 // Phone editor page served by web.cpp. Self-contained: the phone has no internet
 // while it's on the pad's Wi-Fi, so no external scripts, fonts or images.
+// Only "Check for updates" goes online (GitHub API + raw SVGs of the icon library,
+// both allow cross-origin reads), when the phone is on the home network.
 #pragma once
 
 static const char WEB_PAGE[] = R"rawliteral(<!doctype html>
@@ -63,6 +65,21 @@ footer button{flex:1}
 #nets{display:flex;flex-direction:column;gap:8px;margin-top:10px}
 #nets button{text-align:left;display:flex;justify-content:space-between}
 #wifiForm input{margin-top:10px}
+select{font:inherit;color:var(--txt);background:var(--card);border:1px solid var(--line);border-radius:10px;min-height:44px;padding:0 8px;width:100%}
+.imp{display:block;background:var(--card2);border:1px solid var(--line);border-radius:10px;padding:10px;margin-top:10px}
+.imp summary{min-height:32px;cursor:pointer}
+.nr{border-top:1px solid var(--line);margin-top:10px;padding-top:10px}
+.hd{display:flex;align-items:center;gap:10px}
+.hd input[type=checkbox]{width:22px;height:22px;flex:none;accent-color:var(--y)}
+.hd img{width:44px;height:44px;flex:none;background:#000;border-radius:50%;padding:4px}
+.hd input[type=text]{flex:1;min-width:0}
+.pad{display:flex;gap:6px;margin-top:8px;align-items:center}
+.pad button{min-width:42px;padding:0}
+.pad .code{flex:1;font-size:18px;letter-spacing:.08em;color:var(--y)}
+.pad .code .note{font-size:13px;letter-spacing:0}
+.fx{margin:6px 0 10px;padding-left:20px}
+.file{display:flex;flex:none;align-items:center;border:1px solid var(--line);border-radius:10px;min-height:44px;padding:0 14px;background:var(--card);cursor:pointer}
+#updStatus{color:var(--y);margin-top:8px}
 </style></head><body>
 <header><b>MACRODIVER</b><span id="dirty"></span></header>
 <div id="loading">Loading from the pad&hellip;</div>
@@ -99,6 +116,25 @@ footer button{flex:1}
   <div id="cats" class="chips" style="margin-top:10px"></div>
   <div id="grid"></div>
 
+  <h2>New stratagems &amp; icons</h2>
+  <div class="wcard">
+    <div>Looks in the community icon library for new warbonds and icon fixes, and adds them with their icons. Needs internet: the pad and this phone on your home Wi-Fi.</div>
+    <div class="row"><button id="updCheck">Check for updates</button></div>
+    <div id="updStatus"></div>
+    <div id="updOut"></div>
+  </div>
+
+  <h2>Custom stratagems <span id="cCount"></span></h2>
+  <div id="customs"></div>
+  <div id="ced" class="imp" hidden>
+    <div class="hd"><img id="cedImg" alt=""><input type="text" id="cedName" placeholder="Name" autocomplete="off"></div>
+    <div class="pad"><select id="cedCat"></select><label class="file">Image&hellip;<input type="file" id="cedFile" accept="image/*,.svg" hidden></label></div>
+    <div id="cedPad"></div>
+    <div class="row"><button id="cedSave" class="primary">Save to pad</button><button id="cedCancel">Cancel</button><button id="cedDel" class="danger">Delete</button></div>
+  </div>
+  <button id="addCustom">+ New custom stratagem</button>
+  <div class="note">Read codes from the in-game stratagem menu. Custom stratagems are saved right away, separately from &ldquo;Save to pad&rdquo;.</div>
+
   <h2>Chat messages</h2>
   <div id="msgs"></div>
   <button id="addMsg">+ Add message</button>
@@ -108,7 +144,7 @@ footer button{flex:1}
 <div id="toast"></div>
 <script>
 const MSG_CAT=9, $=id=>document.getElementById(id);
-let S,B,M,active,sel=0,cat=0,query='',icons={},dirty=false;
+let S,B,M,active,sel=0,cat=0,query='',icons={},iconVer=null,dirty=false;
 const ARW={U:'↑',D:'↓',L:'←',R:'→'};
 const arrows=k=>[...k].map(c=>ARW[c]||'').join(' ');
 const ascii=s=>s.normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/[^\x20-\x7e]/g,'');
@@ -135,14 +171,14 @@ async function load(){
   M=S.msgs.map(m=>({id:m.id,text:m.text}));
   active=S.active;sel=Math.min(sel,B.length-1);
   $('loading').hidden=true;$('app').hidden=false;
-  setDirty(false);render();
-  if(!Object.keys(icons).length)loadIcons();
+  setDirty(false);render();renderCustoms();updRender();
+  if(S.iconVer!==iconVer){iconVer=S.iconVer;icons={};loadIcons()}
   if(!W)wifiLoad();
 }
 
 async function loadIcons(){
   try{
-    const buf=new Uint8Array(await (await fetch('/icons')).arrayBuffer()), px=S.iconSize, cv=document.createElement('canvas');
+    const buf=new Uint8Array(await (await fetch('/icons?v='+S.iconVer)).arrayBuffer()), px=S.iconSize, cv=document.createElement('canvas');
     cv.width=cv.height=px;const ctx=cv.getContext('2d');
     for(const s of S.strats){
       if(s.i<0)continue;
@@ -153,7 +189,7 @@ async function loadIcons(){
       }
       ctx.putImageData(img,0,0);icons[s.id]=cv.toDataURL();
     }
-    render();
+    render();renderCustoms();
   }catch(e){}
 }
 
@@ -296,6 +332,203 @@ $('wforget').onclick=async()=>{
   if(!confirm('Forget '+W.home+'? The pad goes back to its own setup network.'))return;
   try{await fetch('/api/wifi/forget',{method:'POST'})}catch(e){}
   $('wssid').value='';$('wpass').value='';wifiLoad();
+};
+// ---- custom stratagems and updates from the icon library ----
+const LIB='nvigneux/Helldivers-2-Stratagems-icons-svg';
+const libUrl=p=>'https://raw.githubusercontent.com/'+LIB+'/HEAD/'+p.split('/').map(encodeURIComponent).join('/')+'.svg';
+const norm=s=>s.toLowerCase().normalize('NFD').replace(/[^a-z0-9]/g,'');
+const catOpts=c=>S.cats.slice(0,MSG_CAT).map((x,i)=>'<option value="'+i+'"'+(i===c?' selected':'')+'>'+esc(x.n)+'</option>').join('');
+const codePad=k=>'<div class="pad"><span class="code">'+(k?arrows(k):'<span class="note">no code yet</span>')+'</span>'
+  +'UDLR'.split('').map(d=>'<button data-d="'+d+'">'+ARW[d]+'</button>').join('')+'<button data-d="x" aria-label="Delete last arrow">&#9003;</button></div>';
+const codeStep=(k,d)=>d==='x'?k.slice(0,-1):(k.length<S.codeLen?k+d:k);
+let L=null,N={},FX=[],R={},svgT={},svgU={},openF=new Set(),working=false;  // library, new/fixes found, import rows, svg caches
+
+function guessCat(n){
+  n=n.toLowerCase();
+  if(/^orbital/.test(n))return 0;
+  if(/^eagle/.test(n))return 1;
+  if(/exosuit|frv|vehicle|tank|maelstrom|bastion/.test(n))return 4;
+  if(/sentry|tower/.test(n))return 5;
+  if(/mine|emplacement|relay|battlement/.test(n))return 6;
+  if(/pack|guard dog|backpack|shield/.test(n))return 3;
+  if(/drill|beacon|flag|reinforce|resupply|hellbomb|probe|upload|container/.test(n))return 7;
+  return 2;
+}
+function hiddenSet(){try{return new Set(JSON.parse(localStorage.getItem('mdHidden')||'[]'))}catch(e){return new Set()}}
+function saveHidden(h){try{localStorage.setItem('mdHidden',JSON.stringify([...h]))}catch(e){}}
+async function post(u,o){
+  const r=await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(o)}),j=await r.json();
+  if(!j.ok)throw new Error(j.err||'error');return j;
+}
+async function svgText(p){
+  if(!svgT[p]){const r=await fetch(libUrl(p));if(!r.ok)throw new Error('icon download failed');svgT[p]=await r.text()}
+  return svgT[p];
+}
+// image -> pad icon: 64 px then 44 px, RGB565 big-endian + alpha (icons.h, same as tools/icongen)
+async function raster(blob){
+  const u=URL.createObjectURL(blob),img=new Image();
+  try{
+    await new Promise((ok,ko)=>{img.onload=ok;img.onerror=()=>ko(new Error('unreadable image'));img.src=u});
+    const out=new Uint8Array(64*64*3+44*44*3);let o=0;
+    for(const px of [64,44]){
+      const cv=document.createElement('canvas');cv.width=cv.height=px;const c=cv.getContext('2d');
+      const w=img.naturalWidth||px,h=img.naturalHeight||px,k=Math.min(px/w,px/h);
+      c.drawImage(img,(px-w*k)/2,(px-h*k)/2,w*k,h*k);
+      const d=c.getImageData(0,0,px,px).data;
+      for(let i=0;i<px*px;i++){
+        const v=((d[4*i]>>3)<<11)|((d[4*i+1]>>2)<<5)|(d[4*i+2]>>3);
+        out[o++]=v>>8;out[o++]=v&255;out[o++]=d[4*i+3];
+      }
+    }
+    return out;
+  }finally{URL.revokeObjectURL(u)}
+}
+const libIcon=async p=>raster(new Blob([await svgText(p)],{type:'image/svg+xml'}));
+async function upIcon(id,sha,px){
+  const fd=new FormData();fd.append('f',new Blob([px]),'icon.bin');
+  const j=await (await fetch('/api/icon?id='+id+'&sha='+encodeURIComponent(sha),{method:'POST',body:fd})).json();
+  if(!j.ok)throw new Error(j.err||'icon not saved');
+}
+function busy(on,msg){working=on;$('updStatus').textContent=msg||'';$('updCheck').disabled=on;document.querySelectorAll('#updOut button').forEach(b=>b.disabled=on)}
+function needClean(){if(dirty)toast('Save or discard your build changes first');return dirty}
+
+$('updCheck').onclick=async()=>{
+  if(needClean())return;
+  busy(true,'Checking the icon library…');
+  try{
+    const r=await fetch('https://api.github.com/repos/'+LIB+'/git/trees/HEAD?recursive=1');
+    if(!r.ok)throw new Error(r.status===403||r.status===429?'GitHub is limiting requests: try again in an hour.':'GitHub error '+r.status);
+    L=(await r.json()).tree.filter(x=>x.type==='blob'&&x.path.endsWith('.svg')).map(x=>{
+      const p=x.path.slice(0,-4),k=p.lastIndexOf('/');return {p,sha:x.sha,folder:k<0?'':p.slice(0,k),name:p.slice(k+1)};
+    });
+    busy(false);
+  }catch(e){busy(false,e instanceof TypeError?"Can't reach GitHub. The phone needs internet: use your home Wi-Fi, not the pad's setup network.":e.message)}
+  updRender();
+};
+
+function updRender(){
+  if(!L)return;
+  const hid=hiddenSet(),byPath={},loose={};
+  S.strats.forEach(s=>{if(s.p)byPath[s.p]=s;else loose[norm(s.n)]=s});
+  FX=[];N={};let nHid=0;
+  for(const f of L){
+    const s=byPath[f.p]||loose[norm(f.name)];  // by library path, else by name (no icon yet)
+    if(s){if(s.h!==f.sha&&!(s.h==='user'&&s.p))FX.push({f,s});continue}
+    if(hid.has(f.p)){nHid++;continue}
+    (N[f.folder]=N[f.folder]||[]).push(f);
+  }
+  const folders=Object.keys(N).sort(),room=S.maxCustom-S.strats.filter(s=>s.id>=1000).length;
+  let h='';
+  if(FX.length)h+='<div class="imp"><b>Icons to download</b><ul class="fx">'+FX.map(x=>'<li>'+esc(x.s.n)+' <span class="note">'+(x.s.h?'newer version':'missing')+'</span></li>').join('')
+    +'</ul><button id="fixAll" class="primary">Download '+FX.length+' icon'+(FX.length>1?'s':'')+'</button></div>';
+  for(const fd of folders){
+    h+='<details class="imp" data-f="'+esc(fd)+'"'+(openF.has(fd)||folders.length===1?' open':'')+'><summary><b>'+esc(fd||'Library')+'</b> &middot; '+N[fd].length+' new</summary>';
+    for(const f of N[fd]){
+      const r=R[f.p]=R[f.p]||{name:ascii(f.name).slice(0,S.nameLen),cat:guessCat(f.name),code:'',on:true};
+      h+='<div class="nr" data-p="'+esc(f.p)+'"><div class="hd"><input type="checkbox" data-a="on"'+(r.on?' checked':'')+' aria-label="Add this one">'
+        +'<img data-svg="'+esc(f.p)+'" alt=""><input type="text" data-a="name" maxlength="'+S.nameLen+'" value="'+esc(r.name)+'"></div>'
+        +'<div class="pad"><select data-a="cat">'+catOpts(r.cat)+'</select><button data-a="hide">Hide</button></div>'+codePad(r.code)+'</div>';
+    }
+    h+='<div class="row"><button class="primary" data-imp="'+esc(fd)+'">Add to pad</button></div></details>';
+  }
+  if(folders.length)h+='<div class="note">Enter codes from the in-game stratagem menu, now or later (a stratagem without a code can\'t be sent). Room for '+room+' more custom stratagems.</div>';
+  if(!FX.length&&!folders.length)h+='<div class="note">Up to date: all '+L.length+' library icons are on the pad'+(nHid?' or hidden':'')+'.</div>';
+  if(nHid)h+='<div class="row"><button id="unhide">Show '+nHid+' hidden</button></div>';
+  $('updOut').innerHTML=h;
+  document.querySelectorAll('#updOut img[data-svg]').forEach(async img=>{
+    const p=img.dataset.svg;
+    try{if(!svgU[p])svgU[p]=URL.createObjectURL(new Blob([await svgText(p)],{type:'image/svg+xml'}));img.src=svgU[p]}catch(e){}
+  });
+  if(working)busy(true,$('updStatus').textContent);
+}
+
+$('updOut').addEventListener('toggle',e=>{const d=e.target.dataset.f;if(d!==undefined)e.target.open?openF.add(d):openF.delete(d)},true);
+$('updOut').oninput=e=>{
+  const row=e.target.closest('[data-p]');if(!row)return;const r=R[row.dataset.p],a=e.target.dataset.a;
+  if(a==='name'){const v=ascii(e.target.value);if(v!==e.target.value)e.target.value=v;r.name=v}
+  else if(a==='on')r.on=e.target.checked;
+  else if(a==='cat')r.cat=+e.target.value;
+};
+$('updOut').onclick=async e=>{
+  const t=e.target.closest('button');if(!t||working)return;
+  const row=t.closest('[data-p]');
+  if(t.dataset.d&&row){const r=R[row.dataset.p];r.code=codeStep(r.code,t.dataset.d);t.parentNode.outerHTML=codePad(r.code);return}
+  if(t.dataset.a==='hide'){const h=hiddenSet();h.add(row.dataset.p);saveHidden(h);updRender();return}
+  if(t.id==='unhide'){saveHidden(new Set());updRender();return}
+  if(needClean())return;
+  if(t.id==='fixAll'){
+    let n=0;
+    try{
+      for(const x of FX){
+        busy(true,'Downloading icon for '+x.s.n+'…');
+        await upIcon(x.s.id,x.f.sha,await libIcon(x.f.p));
+        if(x.s.id>=1000&&!x.s.p)await post('/api/custom',{id:x.s.id,name:x.s.n,cat:x.s.c,code:x.s.k,src:x.f.p});  // track it from now on
+        n++;
+      }
+      busy(false);toast(n+' icon'+(n>1?'s':'')+' updated ✓');
+    }catch(x){busy(false,'Stopped: '+x.message)}
+    await load();return;
+  }
+  if(t.dataset.imp!==undefined){
+    const list=(N[t.dataset.imp]||[]).filter(f=>R[f.p].on);
+    if(!list.length){toast('Nothing ticked');return}
+    let n=0;
+    try{
+      for(const f of list){
+        const r=R[f.p];
+        busy(true,'Adding '+(r.name||f.name)+'…');
+        const px=await libIcon(f.p);  // before creating it: a bad icon leaves nothing behind
+        const j=await post('/api/custom',{id:0,name:r.name.trim()||ascii(f.name),cat:r.cat,code:r.code,src:f.p});
+        await upIcon(j.id,f.sha,px);
+        delete R[f.p];n++;
+      }
+      busy(false);toast(n+' added to the pad ✓');
+    }catch(x){busy(false,'Stopped after '+n+': '+x.message)}
+    await load();
+  }
+};
+
+function renderCustoms(){
+  const C=S.strats.filter(s=>s.id>=1000);
+  $('cCount').textContent=C.length+' / '+S.maxCustom;
+  $('customs').innerHTML=C.map(s=>'<div class="item" style="border-left-color:'+color(s.c)+'">'+icon(s)+'<div class="t"><div class="n">'+esc(s.n)+'</div><div class="k" style="color:'+(s.k?color(s.c):'var(--dim)')+'">'+(s.k?arrows(s.k):'no code yet')+'</div></div>'
+    +'<button data-e="'+s.id+'" aria-label="Edit">&#9998;</button></div>').join('')||'<div class="empty">None yet. Add one here, or with &ldquo;Check for updates&rdquo;.</div>';
+  $('addCustom').disabled=C.length>=S.maxCustom;
+}
+let E=null;  // custom stratagem in the editor
+function cedOpen(s){
+  if(needClean())return;
+  E=s?{id:s.id,name:s.n,cat:s.c,code:s.k,px:null,img:icons[s.id]||''}:{id:0,name:'',cat:8,code:'',px:null,img:''};
+  cedRender();$('ced').hidden=false;$('addCustom').hidden=true;$('cedName').focus();
+}
+function cedClose(){$('ced').hidden=true;$('addCustom').hidden=false;E=null}
+function cedRender(){
+  $('cedName').value=E.name;$('cedName').maxLength=S.nameLen;$('cedCat').innerHTML=catOpts(E.cat);$('cedPad').innerHTML=codePad(E.code);
+  $('cedImg').src=E.img||'';$('cedImg').style.visibility=E.img?'visible':'hidden';$('cedDel').hidden=!E.id;
+}
+$('customs').onclick=e=>{const b=e.target.closest('[data-e]');if(b)cedOpen(S.strats.find(s=>s.id===+b.dataset.e))};
+$('addCustom').onclick=()=>cedOpen(null);
+$('cedPad').onclick=e=>{const d=e.target.closest('[data-d]');if(d){E.code=codeStep(E.code,d.dataset.d);$('cedPad').innerHTML=codePad(E.code)}};
+$('cedName').oninput=e=>{const v=ascii(e.target.value);if(v!==e.target.value)e.target.value=v;E.name=v};
+$('cedCat').onchange=e=>E.cat=+e.target.value;
+$('cedFile').onchange=async e=>{
+  const f=e.target.files[0];e.target.value='';if(!f)return;
+  try{E.px=await raster(f);E.img=URL.createObjectURL(f);cedRender()}catch(x){toast("Can't read that image")}
+};
+$('cedCancel').onclick=cedClose;
+$('cedSave').onclick=async()=>{
+  if(!E.name.trim()){toast('Enter a name');return}
+  $('cedSave').disabled=true;
+  try{
+    const j=await post('/api/custom',{id:E.id,name:E.name,cat:E.cat,code:E.code});
+    if(E.px)await upIcon(j.id,'user',E.px);  // 'user': never replaced by a library update
+    cedClose();toast('Saved to the pad ✓');await load();
+  }catch(x){toast('Not saved: '+x.message)}
+  $('cedSave').disabled=false;
+};
+$('cedDel').onclick=async()=>{
+  if(!confirm('Delete "'+E.name+'"? It is also removed from your builds.'))return;
+  try{await post('/api/custom/delete',{id:E.id});cedClose();toast('Deleted');await load()}catch(x){toast(x.message)}
 };
 // coming back to the tab: refresh if nothing is being edited
 document.addEventListener('visibilitychange',()=>{if(!document.hidden){wifiLoad();if(!dirty)load()}});

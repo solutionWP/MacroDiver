@@ -1,4 +1,5 @@
 #include "storage.h"
+#include "icons.h"
 #include <Preferences.h>
 #include <string.h>
 #include <stdio.h>
@@ -20,6 +21,12 @@ static Strat s_msgStrat[MAX_MSG];
 static const char *DEFAULT_MSGS = "gg;have to go, see ya;see ya;bunker";
 
 static Preferences prefs;
+
+struct CustomStratV1 {  // saved under "c" by the first firmware
+  uint16_t id;
+  char name[NAME_LEN + 1];
+  char code[MAX_CODE + 1];
+};
 
 static void defaults_settings() {
   g_settings.menuKey = 0;     // Left Ctrl
@@ -49,7 +56,7 @@ static void defaults_builds() {
 void custom_refresh(int j) {
   Strat &s = s_customStrat[j];
   s.id = g_customs[j].id;
-  s.cat = CAT_CUSTOM;
+  s.cat = g_customs[j].cat < CAT_MESSAGE ? g_customs[j].cat : CAT_CUSTOM;
   s.name = g_customs[j].name;
   s.shortName = g_customs[j].name;
   s.code = g_customs[j].code;
@@ -104,8 +111,27 @@ void storage_load() {
   if (ok) {
     int nc = prefs.getUChar("nc", 0);
     if (nc > MAX_CUSTOM) nc = MAX_CUSTOM;
-    if (nc > 0 && prefs.getBytes("c", g_customs, nc * sizeof(CustomStrat)) == nc * sizeof(CustomStrat))
-      g_customCount = nc;
+    if (prefs.isKey("c2")) {
+      if (nc > 0 && prefs.getBytes("c2", g_customs, nc * sizeof(CustomStrat)) == nc * sizeof(CustomStrat))
+        g_customCount = nc;
+    } else if (nc > 0 && nc <= 16) {  // first firmware format: no category, no icon source
+      CustomStratV1 old[16];
+      if (prefs.getBytes("c", old, nc * sizeof(CustomStratV1)) == nc * sizeof(CustomStratV1)) {
+        for (int j = 0; j < nc; j++) {
+          CustomStrat &c = g_customs[j];
+          memset(&c, 0, sizeof(c));
+          c.id = old[j].id;
+          memcpy(c.name, old[j].name, sizeof(c.name));
+          memcpy(c.code, old[j].code, sizeof(c.code));
+          c.cat = CAT_CUSTOM;
+        }
+        g_customCount = nc;
+        storage_save_customs();
+      }
+    }
+    for (int j = 0; j < g_customCount; j++) {
+      g_customs[j].name[NAME_LEN] = g_customs[j].code[MAX_CODE] = g_customs[j].src[SRC_LEN] = 0;
+    }
   }
   for (int j = 0; j < g_customCount; j++) custom_refresh(j);
 
@@ -150,11 +176,14 @@ void storage_save_all_builds() {
 
 void storage_save_customs() {
   prefs.putUChar("nc", g_customCount);
-  if (g_customCount) prefs.putBytes("c", g_customs, g_customCount * sizeof(CustomStrat));
-  else if (prefs.isKey("c")) prefs.remove("c");
+  prefs.putBytes("c2", g_customs, g_customCount * sizeof(CustomStrat));  // present even when empty: marks the format
+  if (prefs.isKey("c")) prefs.remove("c");
 }
 
-void storage_factory_reset() { prefs.clear(); }
+void storage_factory_reset() {
+  prefs.clear();
+  icons_wipe();
+}
 
 void storage_get_str(const char *key, char *out, size_t len) {
   out[0] = 0;
@@ -214,7 +243,7 @@ bool build_toggle(Build *b, uint16_t id) {
   return true;
 }
 
-int custom_add(const char *name, const char *code) {
+int custom_add(const char *name, const char *code, uint8_t cat, const char *src) {
   if (g_customCount >= MAX_CUSTOM) return -1;
   uint16_t id = CUSTOM_ID_BASE;
   for (bool clash = true; clash;) {  // lowest free ID
@@ -227,8 +256,16 @@ int custom_add(const char *name, const char *code) {
   c.id = id;
   strncpy(c.name, name, NAME_LEN);
   strncpy(c.code, code, MAX_CODE);
+  c.cat = cat < CAT_MESSAGE ? cat : CAT_CUSTOM;
+  strncpy(c.src, src ? src : "", SRC_LEN);
   custom_refresh(g_customCount);
   return g_customCount++;
+}
+
+int custom_index(uint16_t id) {
+  for (int j = 0; j < g_customCount; j++)
+    if (g_customs[j].id == id) return j;
+  return -1;
 }
 
 void custom_delete(int j) {
@@ -242,6 +279,7 @@ void custom_delete(int j) {
   for (int k = j; k < g_customCount - 1; k++) g_customs[k] = g_customs[k + 1];
   g_customCount--;
   for (int k = 0; k < g_customCount; k++) custom_refresh(k);
+  icon_remove(id);
 }
 
 const Strat *custom_find(uint16_t id) {

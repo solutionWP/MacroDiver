@@ -3,7 +3,9 @@
 //   MACRODIVER-BACKUP 1
 //   S menuKey=0 menuMode=0 ...            settings, unknown keys ignored
 //   B layout|name|id,id,id                 one per build, in order
-//   C id|name|code                         custom stratagem
+//   C id|name|code|cat|src                 custom stratagem (src: icon library path; the
+//                                          icons themselves aren't in the backup: the phone
+//                                          editor offers to download missing ones again)
 //   M id|text                              chat message
 //   END
 // IDs are the stable catalog/custom/message IDs, so builds restore exactly.
@@ -11,6 +13,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include "storage.h"
+#include "icons.h"
 
 struct SetField { const char *key; uint8_t *ptr; };
 static const SetField SET_FIELDS[] = {
@@ -41,7 +44,9 @@ void backup_export(Stream *o) {
   for (int j = 0; j < g_customCount; j++) {
     o->printf("C %u|", g_customs[j].id);
     put_clean(o, g_customs[j].name);
-    o->printf("|%s\n", g_customs[j].code);
+    o->printf("|%s|%u|", g_customs[j].code, g_customs[j].cat);
+    put_clean(o, g_customs[j].src);
+    o->println();
   }
   for (int j = 0; j < g_msgCount; j++) {
     o->printf("M %u|", g_msgs[j].id);
@@ -72,7 +77,8 @@ int backup_import_line(char *line) {
     return 1;
   }
   if (!s_importing) return 0;
-  char *f[3];
+  int n;
+  char *f[5];
   if (line[0] == 'S' && line[1] == ' ') {
     for (char *tok = strtok(line + 2, " "); tok; tok = strtok(nullptr, " ")) {
       char *eq = strchr(tok, '=');
@@ -88,8 +94,9 @@ int backup_import_line(char *line) {
     b.layout = (uint8_t)atoi(f[0]);
     for (char *tok = strtok(f[2], ","); tok && b.count < MAX_SLOTS; tok = strtok(nullptr, ","))
       b.ids[b.count++] = (uint16_t)atoi(tok);
-  } else if (line[0] == 'C' && line[1] == ' ' && split(line + 2, f, 3) == 3) {
-    int j = custom_add(f[1], f[2]);
+  } else if (line[0] == 'C' && line[1] == ' ' && (n = split(line + 2, f, 5)) >= 3) {
+    // id|name|code, then |cat|src since the icon import (older backups: custom category, no icon)
+    int j = custom_add(f[1], f[2], n >= 4 ? (uint8_t)atoi(f[3]) : CAT_CUSTOM, n >= 5 ? f[4] : "");
     if (j >= 0) {
       g_customs[j].id = (uint16_t)atoi(f[0]);  // keep original ID so builds still match
       custom_refresh(j);
@@ -108,6 +115,9 @@ int backup_import_line(char *line) {
     storage_save_all_builds();
     storage_save_customs();
     storage_save_msgs();
+    // icons of custom stratagems the backup doesn't have: a new one could reuse the ID
+    for (uint16_t id = CUSTOM_ID_BASE; id < MSG_ID_BASE; id++)
+      if (custom_index(id) < 0) icon_remove(id);
     return 2;
   }
   return 1;
